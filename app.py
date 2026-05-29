@@ -259,6 +259,27 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Relatório executivo para RH")
     st.caption("O relatório em PDF foi desenhado para priorizar gráficos e leitura rápida, mantendo um resumo textual no final.")
+
+    info_col_a, info_col_b, info_col_c = st.columns([1, 1, 1])
+    with info_col_a:
+        application_start_date = st.date_input("Data de início da aplicação")
+    with info_col_b:
+        total_collaborators = int(
+            st.number_input(
+                "Total de colaboradores",
+                min_value=0,
+                value=max(int(analysis["response_count"]), 1),
+                step=1,
+            )
+        )
+
+    response_count = int(analysis["response_count"])
+    adherence_percentage = (response_count / total_collaborators * 100) if total_collaborators > 0 else None
+    with info_col_c:
+        st.metric("Percentual de adesão", f"{adherence_percentage:.1f}%" if adherence_percentage is not None else "-")
+
+    application_start_date_text = application_start_date.strftime("%d/%m/%Y") if application_start_date is not None else None
+
     report_markdown = build_rh_report_markdown(
         response_count=analysis["response_count"],
         critical_threshold=float(critical_threshold),
@@ -268,6 +289,9 @@ with tabs[5]:
         segment_summary=segment_summary,
         segment_column=segment_column,
         selected_segment="todas as áreas",
+        application_start_date=application_start_date_text,
+        total_collaborators=total_collaborators,
+        adherence_percentage=adherence_percentage,
     )
     st.markdown(report_markdown)
     report_pdf = build_rh_report_pdf_bytes(
@@ -279,6 +303,9 @@ with tabs[5]:
         segment_summary=segment_summary,
         segment_column=segment_column,
         selected_segment="todas as áreas",
+        application_start_date=application_start_date_text,
+        total_collaborators=total_collaborators,
+        adherence_percentage=adherence_percentage,
     )
     st.download_button(
         "Baixar relatório em PDF (reportlab)",
@@ -297,6 +324,9 @@ with tabs[5]:
         segment_summary=segment_summary,
         segment_column=segment_column,
         selected_segment="todas as áreas",
+        application_start_date=application_start_date_text,
+        total_collaborators=total_collaborators,
+        adherence_percentage=adherence_percentage,
         response_frame=response_frame,
         matches=matches,
         question_catalog=question_catalog,

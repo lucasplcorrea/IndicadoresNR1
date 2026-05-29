@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import textwrap
 import unicodedata
 from uuid import uuid4
 from typing import Any
@@ -567,11 +568,68 @@ def build_recommendations(pillar_summary: pd.DataFrame, critical_threshold: floa
     return recommendations
 
 
+def build_pillar_recommendations(
+    pillar_summary: pd.DataFrame,
+    critical_threshold: float,
+    attention_threshold: float,
+) -> list[dict[str, str]]:
+    recommendations: list[dict[str, str]] = []
+
+    for row in pillar_summary.itertuples(index=False):
+        pillar = str(row.pilar)
+        score = float(row.media) if row.media == row.media else float("nan")
+        if score != score:
+            continue
+
+        status = str(row.status)
+        if status == "Saudável":
+            continue
+
+        pillar_key = normalize_text(pillar)
+        if any(keyword in pillar_key for keyword in ["lideranca", "liderança", "apoio social de superiores", "confianca vertical", "confiança vertical"]):
+            text = "Reforçar a presença da liderança, ampliar feedbacks frequentes e garantir suporte direto ao time."
+        elif any(keyword in pillar_key for keyword in ["conflitos laborais", "recompensas", "transparencia no papel laboral desempenhado", "transparência no papel laboral desempenhado"]):
+            text = "Revisar alinhamento de expectativas, reconhecimento e clareza dos papéis para reduzir ruído operacional."
+        elif any(keyword in pillar_key for keyword in ["exigencias quantitativas", "exigências quantitativas", "ritmo de trabalho", "exigencias cognitivas", "exigências cognitivas"]):
+            text = "Revisar carga de trabalho, priorização e cadência de entrega para reduzir sobrecarga percebida."
+        elif any(keyword in pillar_key for keyword in ["burnout", "stress", "sintomas depressivos", "saude geral", "saúde geral", "conflito trabalho/família"]):
+            text = "Priorizar ações de saúde mental, pausas, equilíbrio vida-trabalho e monitoramento do bem-estar."
+        elif any(keyword in pillar_key for keyword in ["apoio social de colegas", "colegas", "confiança horizontal", "confianca horizontal"]):
+            text = "Estimular colaboração entre pares, rituais de equipe e canais claros de suporte entre colegas."
+        elif any(keyword in pillar_key for keyword in ["justiça e respeito", "justica e respeito", "transparencia", "transparência"]):
+            text = "Reforçar comunicação transparente, critérios de decisão e tratamento consistente entre áreas."
+        else:
+            text = "Definir uma ação corretiva específica, acompanhar a tendência mensal e reavaliar a percepção do grupo."
+
+        recommendations.append(
+            {
+                "pilar": pillar,
+                "status": status,
+                "media": f"{score:.1f}",
+                "label": f"{pillar} ({status})",
+                "text": text,
+            }
+        )
+
+    if not recommendations:
+        recommendations.append(
+            {
+                "pilar": "Monitoramento contínuo",
+                "status": "Saudável",
+                "media": "-",
+                "label": "Monitoramento contínuo",
+                "text": "Nenhum pilar crítico ou em atenção no recorte atual. Manter acompanhamento periódico.",
+            }
+        )
+
+    return recommendations
+
+
 def build_recommendation_explanation(critical_threshold: float) -> str:
     return (
-        "As recomendações são geradas por regras fixas do próprio BI: o sistema identifica os pilares com média abaixo "
-        f"de {critical_threshold:.0f} e associa cada grupo a ações padronizadas de RH. Não há IA inferencial nem benchmark externo; "
-        "o texto é uma camada de orientação baseada nos temas do COPSOQ/NR01 que apareceram como críticos."
+        "As recomendações são geradas por regras fixas do próprio BI: o sistema avalia cada pilar, destaca os que estão abaixo "
+        f"de {critical_threshold:.0f} e associa cada um a uma ação padronizada de RH. Não há IA inferencial nem benchmark externo; "
+        "o texto é uma camada de orientação baseada nos temas do COPSOQ/NR01 que apareceram como críticos ou em atenção."
     )
 
 
@@ -703,6 +761,9 @@ def build_rh_report_pdf_bytes(
     segment_summary: pd.DataFrame,
     segment_column: str | None,
     selected_segment: str | None,
+    application_start_date: str | None = None,
+    total_collaborators: int | None = None,
+    adherence_percentage: float | None = None,
 ) -> bytes:
     buffer = BytesIO()
     document = SimpleDocTemplate(
@@ -726,14 +787,25 @@ def build_rh_report_pdf_bytes(
     attention_pillars = int(((pillar_summary["media"] >= critical_threshold) & (pillar_summary["media"] < attention_threshold)).sum()) if not pillar_summary.empty else 0
     healthy_pillars = int((pillar_summary["media"] >= attention_threshold).sum()) if not pillar_summary.empty else 0
 
-    recommendations = build_recommendations(pillar_summary, critical_threshold)
+    recommendations = build_pillar_recommendations(pillar_summary, critical_threshold, attention_threshold)
     recommendation_explanation = build_recommendation_explanation(critical_threshold)
 
     elements: list[Any] = []
     elements.append(Paragraph("Relatório executivo NR01 / COPSOQ", title_style))
     elements.append(Paragraph("Visão resumida e visual para suporte à leitura do RH", subtitle_style))
     elements.append(Spacer(1, 0.2 * cm))
-    elements.append(Paragraph(f"<b>Respostas analisadas:</b> {response_count} | <b>Segmentação:</b> {segment_column or 'não informada'} | <b>Filtro visual:</b> {selected_segment or 'todas as áreas'}", small_center))
+    context_parts = [
+        f"<b>Respostas analisadas:</b> {response_count}",
+        f"<b>Segmentação:</b> {segment_column or 'não informada'}",
+        f"<b>Filtro visual:</b> {selected_segment or 'todas as áreas'}",
+    ]
+    if application_start_date:
+        context_parts.append(f"<b>Início da aplicação:</b> {application_start_date}")
+    if total_collaborators is not None:
+        context_parts.append(f"<b>Total de colaboradores:</b> {int(total_collaborators)}")
+    if adherence_percentage is not None:
+        context_parts.append(f"<b>Adesão:</b> {adherence_percentage:.1f}%")
+    elements.append(Paragraph(" | ".join(context_parts), small_center))
     elements.append(Spacer(1, 0.25 * cm))
 
     metric_cards = Table([
@@ -776,16 +848,18 @@ def build_rh_report_pdf_bytes(
     elements.append(Paragraph(recommendation_explanation, body_style))
     elements.append(Spacer(1, 0.15 * cm))
 
-    recommendation_rows = [[rec["label"], rec["text"]] for rec in recommendations]
-    recommendation_table = Table(recommendation_rows, colWidths=[5.0 * cm, 11.5 * cm])
+    recommendation_rows = [[rec["label"], rec["status"], rec["media"], rec["text"]] for rec in recommendations]
+    recommendation_table = Table(recommendation_rows, colWidths=[5.2 * cm, 2.0 * cm, 1.8 * cm, 8.0 * cm])
     recommendation_table.setStyle(
         TableStyle(
             [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                 ("BACKGROUND", (0, 0), (-1, -1), colors.white),
                 ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cbd5e1")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
                 ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#f8fafc"), colors.white]),
+                ("ALIGN", (1, 1), (2, -1), "CENTER"),
             ]
         )
     )
@@ -827,6 +901,9 @@ def build_rh_report_markdown(
     segment_summary: pd.DataFrame,
     segment_column: str | None,
     selected_segment: str | None,
+    application_start_date: str | None = None,
+    total_collaborators: int | None = None,
+    adherence_percentage: float | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("# Relatório executivo NR01 / COPSOQ")
@@ -835,6 +912,10 @@ def build_rh_report_markdown(
     lines.append(f"- Respostas analisadas: {response_count}")
     lines.append(f"- Segmentação disponível: {segment_column or 'não informada'}")
     lines.append(f"- Filtro de área aplicado na visualização: {selected_segment or 'todas as áreas'}")
+    lines.append(f"- Data de início da aplicação: {application_start_date or 'não informada'}")
+    lines.append(f"- Total de colaboradores: {total_collaborators if total_collaborators is not None else 'não informado'}")
+    if adherence_percentage is not None:
+        lines.append(f"- Percentual de adesão: {adherence_percentage:.1f}%")
     lines.append("")
     lines.append("## Metodologia")
     lines.append("- O score varia de 0 a 100.")
@@ -858,8 +939,8 @@ def build_rh_report_markdown(
     lines.append(_format_markdown_table(pillar_summary, ["pilar", "media", "status", "perguntas"], max_rows=5))
     lines.append("")
 
-    lines.append("## Perguntas com maior alerta")
-    lines.append(_format_markdown_table(question_summary, ["numero", "pilar", "media", "taxa_critica"], max_rows=10))
+    lines.append("## Todas as perguntas")
+    lines.append(_format_markdown_table(question_summary, ["numero", "pilar", "media", "taxa_critica"], max_rows=None))
     lines.append("")
 
     if not segment_summary.empty:
@@ -869,60 +950,115 @@ def build_rh_report_markdown(
         lines.append(_format_markdown_table(comparison, ["area", "media_geral"], max_rows=None))
         lines.append("")
 
-    recommendations: list[str] = []
-    critical_focus = pillar_summary.loc[pillar_summary["media"] < critical_threshold, "pilar"].head(5).tolist()
-    critical_text = " ".join(critical_focus).lower()
-    if any(keyword in critical_text for keyword in ["liderança", "lideranca", "confiança vertical", "confianca vertical", "apoio social de superiores"]):
-        recommendations.append("Reforçar a qualidade da liderança, os feedbacks e a disponibilidade dos gestores para apoio ao time.")
-    if any(keyword in critical_text for keyword in ["conflitos laborais", "transparência no papel laboral desempenhado", "transparencia no papel laboral desempenhado", "recompensas"]):
-        recommendations.append("Revisar papéis, alinhamento de expectativas, reconhecimento e resolução de conflitos operacionais.")
-    if any(keyword in critical_text for keyword in ["exigências quantitativas", "exigencias quantitativas", "ritmo de trabalho", "exigências cognitivas", "exigencias cognitivas"]):
-        recommendations.append("Ajustar carga de trabalho, priorização e ritmo de execução para reduzir sobrecarga.")
-    if any(keyword in critical_text for keyword in ["burnout", "stress", "sintomas depressivos", "saúde geral", "saude geral", "conflito trabalho/família"]):
-        recommendations.append("Avaliar ações de saúde mental, descanso, equilíbrio entre vida pessoal e trabalho e suporte psicossocial.")
-    if not recommendations:
-        recommendations.append("Manter o monitoramento periódico e acompanhar os pilares com tendência de queda.")
+    recommendations = build_pillar_recommendations(pillar_summary, critical_threshold, attention_threshold)
 
-    lines.append("## Recomendações iniciais")
+    lines.append("## Recomendações críticas e de atenção")
     for recommendation in recommendations:
-        lines.append(f"- {recommendation}")
+        lines.append(f"- {recommendation['label']}: {recommendation['text']}")
 
     return "\n".join(lines)
 
 
-def _plotly_div_from_figure(fig: go.Figure) -> str:
-        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+def _plotly_div_from_figure(fig: go.Figure, *, include_plotlyjs: bool = False) -> str:
+    return pio.to_html(
+        fig,
+        include_plotlyjs="inline" if include_plotlyjs else False,
+        full_html=False,
+        config={"displayModeBar": False},
+    )
 
 
-def _plotly_pillar_bar_div(pillar_summary: pd.DataFrame) -> str:
-        if pillar_summary.empty:
-                return "<div></div>"
-        df = pillar_summary.sort_values("media", ascending=True).tail(12)
-        fig = go.Figure(go.Bar(x=df["media"].tolist(), y=df["pilar"].tolist(), orientation="h", marker_color="#0f766e"))
-        fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), height=320, xaxis=dict(range=[0, 100], title="Média"))
-        return _plotly_div_from_figure(fig)
+def _plotly_pillar_bar_div(pillar_summary: pd.DataFrame, *, include_plotlyjs: bool = False) -> str:
+    if pillar_summary.empty:
+        return "<div></div>"
+    df = pillar_summary.sort_values("media", ascending=True).copy()
+    color_map = {
+        "Crítico": "#b91c1c",
+        "Atenção": "#d97706",
+        "Saudável": "#15803d",
+        "Sem dados": "#64748b",
+    }
+    colors = [color_map.get(str(status), "#64748b") for status in df["status"].tolist()]
+    fig = go.Figure(
+        go.Bar(
+            x=df["pilar"].tolist(),
+            y=df["media"].tolist(),
+            marker_color=colors,
+            text=[f"{float(value):.0f}" if value == value else "-" for value in df["media"].tolist()],
+            textposition="outside",
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=20, b=165),
+        height=380,
+        yaxis=dict(range=[0, 100], title="Média"),
+        xaxis=dict(title="Pilares", tickangle=-30, automargin=True),
+    )
+    return _plotly_div_from_figure(fig, include_plotlyjs=include_plotlyjs)
 
 
-def _plotly_status_pie_div(pillar_summary: pd.DataFrame, critical_threshold: float, attention_threshold: float) -> str:
-        if pillar_summary.empty:
-                return "<div></div>"
-        critical = int((pillar_summary["media"] < critical_threshold).sum())
-        attention = int(((pillar_summary["media"] >= critical_threshold) & (pillar_summary["media"] < attention_threshold)).sum())
-        healthy = int((pillar_summary["media"] >= attention_threshold).sum())
-        labels = ["Crítico", "Atenção", "Saudável"]
-        values = [critical, attention, healthy]
-        fig = go.Figure(go.Pie(labels=labels, values=values, marker_colors=["#b91c1c", "#d97706", "#15803d"]))
-        fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), height=300)
-        return _plotly_div_from_figure(fig)
+def _plotly_status_pie_div(pillar_summary: pd.DataFrame, critical_threshold: float, attention_threshold: float, *, include_plotlyjs: bool = False) -> str:
+    if pillar_summary.empty:
+        return "<div></div>"
+    critical = int((pillar_summary["media"] < critical_threshold).sum())
+    attention = int(((pillar_summary["media"] >= critical_threshold) & (pillar_summary["media"] < attention_threshold)).sum())
+    healthy = int((pillar_summary["media"] >= attention_threshold).sum())
+    labels = ["Crítico", "Atenção", "Saudável"]
+    values = [critical, attention, healthy]
+    fig = go.Figure(
+        go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.58,
+            marker_colors=["#b91c1c", "#d97706", "#15803d"],
+            textinfo="percent",
+            textposition="inside",
+            showlegend=False,
+        )
+    )
+    fig.update_layout(margin=dict(l=20, r=20, t=20, b=20), height=300)
+    return _plotly_div_from_figure(fig, include_plotlyjs=include_plotlyjs)
 
 
-def _plotly_top_questions_div(question_summary: pd.DataFrame) -> str:
-        if question_summary.empty:
-                return "<div></div>"
-        df = question_summary.sort_values("media", ascending=True).head(12)
-        fig = go.Figure(go.Bar(x=df["media"].tolist(), y=[str(n) + ". " + q for n, q in zip(df["numero"].tolist(), df["pergunta"].tolist())], orientation="h", marker_color="#b91c1c"))
-        fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), height=360, xaxis=dict(range=[0, 100], title="Média"))
-        return _plotly_div_from_figure(fig)
+def _plotly_segment_heatmap_div(segment_summary: pd.DataFrame, *, include_plotlyjs: bool = False) -> str:
+    if segment_summary.empty or "segmento" not in segment_summary.columns:
+        return ""
+
+    heatmap_df = segment_summary.set_index("segmento").select_dtypes(include=["number"])
+    if heatmap_df.empty:
+        return ""
+
+    wrapped_y = ["<br>".join(textwrap.wrap(str(item), width=18)) for item in heatmap_df.index.tolist()]
+    wrapped_x = ["<br>".join(textwrap.wrap(str(item), width=16)) for item in heatmap_df.columns.tolist()]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=heatmap_df.values.tolist(),
+            x=wrapped_x,
+            y=wrapped_y,
+            colorscale="RdYlGn",
+            zmin=0,
+            zmax=100,
+            hoverongaps=False,
+            colorbar=dict(title="Score", thickness=14, len=0.9),
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=170, r=40, t=20, b=185),
+        height=430,
+        xaxis=dict(title="Pilares", tickangle=-25, automargin=True),
+        yaxis=dict(title="Segmentos", automargin=True),
+    )
+    return _plotly_div_from_figure(fig, include_plotlyjs=include_plotlyjs)
+
+
+def _plotly_top_questions_div(question_summary: pd.DataFrame, *, include_plotlyjs: bool = False) -> str:
+    if question_summary.empty:
+        return "<div></div>"
+    df = question_summary.sort_values("media", ascending=True).head(12)
+    fig = go.Figure(go.Bar(x=df["media"].tolist(), y=[str(n) + ". " + q for n, q in zip(df["numero"].tolist(), df["pergunta"].tolist())], orientation="h", marker_color="#b91c1c"))
+    fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), height=360, xaxis=dict(range=[0, 100], title="Média"))
+    return _plotly_div_from_figure(fig, include_plotlyjs=include_plotlyjs)
 
 
 def _preferred_answer_order(scale_text: Any) -> list[str]:
@@ -938,20 +1074,32 @@ def _normalize_answer_label(label: Any) -> str:
     return normalize_text(label)
 
 
-def _question_card_html(
-    question_number: int,
-    question_text: str,
-    pillar: str,
-    distribution: pd.DataFrame,
-    scale_text: Any,
-) -> str:
-    if distribution.empty:
-        return ""
-
+def _ordered_distribution(distribution: pd.DataFrame, scale_text: Any) -> pd.DataFrame:
     ordered = distribution.copy()
     order_map = {normalize_text(item): index for index, item in enumerate(_preferred_answer_order(scale_text))}
     ordered["_ord"] = ordered["resposta"].map(lambda value: order_map.get(_normalize_answer_label(value), 999))
-    ordered = ordered.sort_values(["_ord", "quantidade"], ascending=[True, False]).drop(columns=["_ord"])
+    return ordered.sort_values(["_ord", "quantidade"], ascending=[True, False]).drop(columns=["_ord"])
+
+
+def _classify_segment_for_report(value: Any) -> str | None:
+    normalized = normalize_text(value)
+    if "admin" in normalized:
+        return "Administrativo"
+    if "operac" in normalized:
+        return "Operacional"
+    return None
+
+
+def _segment_panel_html(segment_label: str, distribution: pd.DataFrame, scale_text: Any) -> str:
+    if distribution.empty:
+        return (
+            "<div class='segment-panel'>"
+            f"<div class='segment-title'>{segment_label}</div>"
+            "<div class='segment-empty'>Sem respostas para este segmento.</div>"
+            "</div>"
+        )
+
+    ordered = _ordered_distribution(distribution, scale_text)
 
     palette = ["#4f6bed", "#e91e8f", "#2ca6a4", "#8a63d2", "#2eb82e", "#f59e0b", "#ef4444"]
     fig = go.Figure(
@@ -962,13 +1110,12 @@ def _question_card_html(
             sort=False,
             direction="clockwise",
             marker=dict(colors=palette[: len(ordered)]),
-            textinfo="percent",
-            textposition="outside",
+            textinfo="none",
             showlegend=False,
             hoverinfo="skip",
         )
     )
-    fig.update_layout(margin=dict(l=0, r=0, t=8, b=8), height=250, width=300)
+    fig.update_layout(margin=dict(l=0, r=0, t=8, b=8), height=220, width=220)
     chart_html = _plotly_div_from_figure(fig)
 
     legend_items = []
@@ -984,16 +1131,13 @@ def _question_card_html(
         )
 
     return f"""
-    <div class='question-card'>
-        <div class='question-title'>
-        <div class='question-number'>{question_number}. {question_text}</div>
-        <div class='question-pillar'>{pillar}</div>
-        </div>
-        <div class='question-body'>
-        <div class='question-legend'>
+    <div class='segment-panel'>
+        <div class='segment-title'>{segment_label}</div>
+        <div class='segment-body'>
+        <div class='segment-legend'>
             {''.join(legend_items)}
         </div>
-        <div class='question-chart'>
+        <div class='segment-chart'>
             {chart_html}
         </div>
         </div>
@@ -1001,13 +1145,50 @@ def _question_card_html(
     """
 
 
-def _question_cards_html(response_frame: pd.DataFrame, matches: pd.DataFrame, question_summary: pd.DataFrame, question_catalog: pd.DataFrame, limit: int = 8) -> str:
+def _question_card_html(
+    question_number: int,
+    question_text: str,
+    pillar: str,
+    administrative_distribution: pd.DataFrame,
+    operational_distribution: pd.DataFrame,
+    scale_text: Any,
+) -> str:
+    return f"""
+    <div class='question-card'>
+        <div class='question-title'>
+        <div class='question-number'>{question_number}. {question_text}</div>
+        <div class='question-pillar'>{pillar}</div>
+        </div>
+        <div class='segments-grid'>
+            {_segment_panel_html('Administrativo', administrative_distribution, scale_text)}
+            {_segment_panel_html('Operacional', operational_distribution, scale_text)}
+        </div>
+    </div>
+    """
+
+
+def _question_cards_html(
+    response_frame: pd.DataFrame,
+    matches: pd.DataFrame,
+    question_summary: pd.DataFrame,
+    question_catalog: pd.DataFrame,
+    segment_column: str | None,
+    limit: int | None = None,
+) -> str:
     if question_summary.empty:
         return "<div class='empty-state'>Sem perguntas para exibir.</div>"
 
-    selected = question_summary.sort_values("media", ascending=True).head(limit)
+    selected = question_summary.sort_values("numero", ascending=True)
+    if limit is not None:
+        selected = selected.head(limit)
     cards: list[str] = []
     catalog_index = question_catalog.set_index("question_number")
+
+    segmented_frame = response_frame.copy()
+    if segment_column and segment_column in segmented_frame.columns:
+        segmented_frame["_segmento_relatorio"] = segmented_frame[segment_column].map(_classify_segment_for_report)
+    else:
+        segmented_frame["_segmento_relatorio"] = None
 
     for row in selected.itertuples(index=False):
         match_row = matches.loc[matches["question_number"] == int(row.numero)]
@@ -1016,17 +1197,43 @@ def _question_cards_html(response_frame: pd.DataFrame, matches: pd.DataFrame, qu
         matched_column = match_row.iloc[0]["matched_column"]
         if not matched_column or matched_column not in response_frame.columns:
             continue
-        distribution = build_answer_distribution(response_frame, matched_column)
-        if distribution.empty:
-            continue
+        administrative_distribution = build_answer_distribution(
+            segmented_frame[segmented_frame["_segmento_relatorio"] == "Administrativo"],
+            matched_column,
+        )
+        operational_distribution = build_answer_distribution(
+            segmented_frame[segmented_frame["_segmento_relatorio"] == "Operacional"],
+            matched_column,
+        )
+
+        if administrative_distribution.empty and operational_distribution.empty:
+            overall_distribution = build_answer_distribution(response_frame, matched_column)
+            administrative_distribution = overall_distribution.copy()
+            operational_distribution = overall_distribution.copy()
+
         catalog_row = catalog_index.loc[int(row.numero)] if int(row.numero) in catalog_index.index else None
         scale_text = catalog_row["scale"] if catalog_row is not None else ""
-        cards.append(_question_card_html(int(row.numero), str(row.pergunta), str(row.pilar), distribution, scale_text))
+        cards.append(
+            _question_card_html(
+                int(row.numero),
+                str(row.pergunta),
+                str(row.pilar),
+                administrative_distribution,
+                operational_distribution,
+                scale_text,
+            )
+        )
 
     if not cards:
         return "<div class='empty-state'>Nenhuma distribuição de respostas disponível para as perguntas selecionadas.</div>"
 
-    return "\n".join(cards)
+    pages: list[str] = []
+    for index in range(0, len(cards), 4):
+        page_cards = "\n".join(cards[index:index + 4])
+        page_class = "question-page question-page-break" if index + 4 < len(cards) else "question-page"
+        pages.append(f"<div class='{page_class}'>{page_cards}</div>")
+
+    return "\n".join(pages)
 
 
 def build_rh_report_html(
@@ -1039,123 +1246,180 @@ def build_rh_report_html(
         segment_summary: pd.DataFrame,
         segment_column: str | None,
         selected_segment: str | None,
+    application_start_date: str | None = None,
+    total_collaborators: int | None = None,
+    adherence_percentage: float | None = None,
     response_frame: pd.DataFrame | None = None,
     matches: pd.DataFrame | None = None,
     question_catalog: pd.DataFrame | None = None,
 ) -> str:
-        overall_average = float(pillar_summary["media"].mean()) if not pillar_summary.empty else float("nan")
-        critical_pillars = int((pillar_summary["media"] < critical_threshold).sum()) if not pillar_summary.empty else 0
-        attention_pillars = int(((pillar_summary["media"] >= critical_threshold) & (pillar_summary["media"] < attention_threshold)).sum()) if not pillar_summary.empty else 0
-        healthy_pillars = int((pillar_summary["media"] >= attention_threshold).sum()) if not pillar_summary.empty else 0
+    overall_average = float(pillar_summary["media"].mean()) if not pillar_summary.empty else float("nan")
+    critical_pillars = int((pillar_summary["media"] < critical_threshold).sum()) if not pillar_summary.empty else 0
+    attention_pillars = int(((pillar_summary["media"] >= critical_threshold) & (pillar_summary["media"] < attention_threshold)).sum()) if not pillar_summary.empty else 0
+    healthy_pillars = int((pillar_summary["media"] >= attention_threshold).sum()) if not pillar_summary.empty else 0
 
-        pillar_div = _plotly_pillar_bar_div(pillar_summary)
-        status_div = _plotly_status_pie_div(pillar_summary, critical_threshold, attention_threshold)
-        questions_div = _plotly_top_questions_div(question_summary)
-        question_cards = ""
-        if response_frame is not None and matches is not None and question_catalog is not None:
-            question_cards = _question_cards_html(response_frame, matches, question_summary, question_catalog, limit=8)
-
-        template = Template("""
-        <!doctype html>
-        <html>
-        <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <style>
-                body{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; color:#0f172a; margin:18px; background:#f8fafc}
-                .header{display:flex;align-items:center;justify-content:space-between}
-                .title{font-size:20px;font-weight:700}
-                .subtitle{color:#475569}
-                .kpis{display:flex;gap:12px;margin-top:12px}
-                .kpi{background:#0f172a;color:#fff;padding:10px;border-radius:6px;min-width:120px}
-                .section{margin-top:18px}
-                .charts{display:flex;gap:12px;flex-wrap:wrap}
-                .chart{flex:1;min-width:320px;background:#fff;border-radius:16px;padding:12px;box-shadow:0 6px 18px rgba(15,23,42,.08)}
-                .question-list{display:flex;flex-direction:column;gap:16px}
-                .question-card{background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:18px;box-shadow:0 8px 24px rgba(15,23,42,.08)}
-                .question-title{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:14px}
-                .question-number{font-size:14px;line-height:1.4;font-weight:600;color:#334155}
-                .question-pillar{font-size:12px;color:#64748b;background:#f1f5f9;border-radius:999px;padding:6px 10px;white-space:nowrap}
-                .question-body{display:flex;gap:20px;align-items:center}
-                .question-legend{flex:1;min-width:240px;display:flex;flex-direction:column;gap:8px}
-                .legend-row{display:grid;grid-template-columns:16px 1fr auto auto;gap:10px;align-items:center;font-size:13px;color:#334155}
-                .legend-dot{width:10px;height:10px;border-radius:999px;display:inline-block}
-                .legend-label{font-weight:500}
-                .legend-value,.legend-pct{color:#64748b;text-align:right;min-width:28px}
-                .question-chart{flex:0 0 320px;display:flex;justify-content:center;align-items:center}
-                .empty-state{padding:18px;background:#fff;border:1px dashed #cbd5e1;border-radius:14px;color:#64748b}
-                @media (max-width: 900px){.question-body{flex-direction:column}.question-chart{flex:1 1 auto}}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <div>
-                    <div class="title">Relatório executivo NR01 / COPSOQ</div>
-                    <div class="subtitle">Visão resumida e visual para suporte à leitura do RH</div>
-                </div>
-                <div style="text-align:right">
-                    <div>Respostas: {{ response_count }}</div>
-                    <div>Segmentação: {{ segment_column or 'não informada' }}</div>
-                    <div>Filtro: {{ selected_segment or 'todas as áreas' }}</div>
-                </div>
-            </div>
-
-            <div class="kpis">
-                <div class="kpi">Respondentes<br><b>{{ response_count }}</b></div>
-                <div class="kpi">Média geral<br><b>{{ '%.1f' % overall_average if overall_average==overall_average else '-' }}</b></div>
-                <div class="kpi" style="background:#b91c1c">Críticos<br><b>{{ critical_pillars }}</b></div>
-                <div class="kpi" style="background:#d97706">Atenção<br><b>{{ attention_pillars }}</b></div>
-                <div class="kpi" style="background:#15803d">Saudáveis<br><b>{{ healthy_pillars }}</b></div>
-            </div>
-
-            <div class="section">
-                <h3>Resumo visual</h3>
-                <div class="charts">
-                    <div class="chart">{{ pillar_div | safe }}</div>
-                    <div class="chart">{{ status_div | safe }}</div>
-                </div>
-            </div>
-
-            <div class="section">
-                <h3>Perguntas com maior alerta</h3>
-                <div class="question-list">
-                    {{ question_cards | safe }}
-                </div>
-            </div>
-
-            <div class="section">
-                <h3>Recomendações</h3>
-                <div>
-                {% for rec in recommendations %}
-                    <div><b>{{ rec.label }}:</b> {{ rec.text }}</div>
-                {% endfor %}
-                </div>
-            </div>
-
-        </body>
-        </html>
-        """)
-
-        recommendations = build_recommendations(pillar_summary, critical_threshold)
-
-        html = template.render(
-                response_count=response_count,
-                overall_average=overall_average,
-                critical_pillars=critical_pillars,
-                attention_pillars=attention_pillars,
-                healthy_pillars=healthy_pillars,
-                segment_column=segment_column,
-                selected_segment=selected_segment,
-                pillar_div=pillar_div,
-                status_div=status_div,
-                questions_div=questions_div,
-                question_cards=question_cards,
-                recommendations=recommendations,
+    status_has_data = not pillar_summary.empty
+    status_div = _plotly_status_pie_div(pillar_summary, critical_threshold, attention_threshold, include_plotlyjs=True)
+    pillar_div = _plotly_pillar_bar_div(pillar_summary)
+    heatmap_div = _plotly_segment_heatmap_div(segment_summary)
+    question_cards = ""
+    if response_frame is not None and matches is not None and question_catalog is not None:
+        question_cards = _question_cards_html(
+            response_frame,
+            matches,
+            question_summary,
+            question_catalog,
+            segment_column=segment_column,
+            limit=None,
         )
-        return html
+
+    recommendations = build_pillar_recommendations(pillar_summary, critical_threshold, attention_threshold)
+
+    template = Template("""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+            body{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; color:#0f172a; margin:18px; background:#f8fafc}
+            .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+            .title{font-size:20px;font-weight:700}
+            .subtitle{color:#475569}
+            .cover{margin-top:12px;background:linear-gradient(135deg,#0f172a 0%,#1e293b 45%,#0f766e 100%);color:#fff;border-radius:24px;padding:20px;box-shadow:0 18px 40px rgba(15,23,42,.18)}
+            .cover-top{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:stretch}
+            .cover-title{font-size:28px;line-height:1.1;font-weight:800;letter-spacing:-.03em;margin-bottom:8px}
+            .cover-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
+            .cover-metric{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:12px 14px}
+            .cover-metric-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#bfdbfe}
+            .cover-metric-value{font-size:22px;font-weight:800;margin-top:4px}
+            .cover-panel{background:#fff;color:#0f172a;border-radius:20px;padding:14px;box-shadow:0 10px 24px rgba(15,23,42,.14);min-width:0}
+            .cover-panel-title{font-size:13px;font-weight:700;color:#334155;margin-bottom:10px}
+            .cover-chart{overflow:hidden;border-radius:14px;background:#fff}
+            .cover-panels{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+            .section{margin-top:18px}
+            .question-list{display:flex;flex-direction:column;gap:16px}
+            .question-page{display:flex;flex-direction:column;gap:16px}
+            .question-title{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:14px}
+            .question-number{font-size:14px;line-height:1.4;font-weight:600;color:#334155}
+            .question-pillar{font-size:12px;color:#64748b;background:#f1f5f9;border-radius:999px;padding:6px 10px;white-space:nowrap}
+            .question-card{background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:18px;box-shadow:0 8px 24px rgba(15,23,42,.08);break-inside:avoid;page-break-inside:avoid;page-break-after:avoid;overflow:hidden}
+            .segments-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start;break-inside:avoid;page-break-inside:avoid}
+            .segment-panel{border:1px solid #e2e8f0;border-radius:14px;padding:12px;background:#fcfdff;min-width:0;break-inside:avoid;page-break-inside:avoid;overflow:hidden}
+            .segment-title{font-size:12px;font-weight:700;letter-spacing:.02em;color:#0f172a;text-transform:uppercase;margin-bottom:8px}
+            .segment-body{display:flex;gap:12px;align-items:center;min-width:0;flex-wrap:nowrap}
+            .segment-legend{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:8px}
+            .legend-row{display:grid;grid-template-columns:12px minmax(0,1fr) 28px 38px;gap:8px;align-items:center;font-size:12px;color:#334155;min-width:0}
+            .legend-dot{width:10px;height:10px;border-radius:999px;display:inline-block}
+            .legend-label{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+            .legend-value,.legend-pct{color:#64748b;text-align:right;min-width:0;white-space:nowrap}
+            .segment-chart{flex:0 0 220px;display:flex;justify-content:center;align-items:center;min-width:0;overflow:hidden}
+            .empty-state{padding:18px;background:#fff;border:1px dashed #cbd5e1;border-radius:14px;color:#64748b}
+            .segment-empty{padding:14px 10px;border:1px dashed #cbd5e1;border-radius:10px;background:#fff;color:#64748b;font-size:13px}
+            .recommendation-card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;margin-bottom:8px}
+            .recommendation-meta{font-size:12px;color:#64748b;margin-top:4px}
+            @media (max-width: 1200px){.cover-top,.cover-panels,.segments-grid{grid-template-columns:1fr}.segment-body{flex-direction:column}.segment-chart{flex:1 1 auto}}
+            @media print{
+                .question-list{break-before:page;page-break-before:always}
+                .question-page.question-page-break{break-after:page;page-break-after:always}
+                .question-card,.segments-grid,.segment-panel{break-inside:avoid;page-break-inside:avoid}
+                .segments-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr) !important}
+                .segment-body{flex-direction:row !important}
+                .segment-chart{flex:0 0 210px !important}
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <div>
+                <div class="title">Relatório executivo NR01 / COPSOQ</div>
+                <div class="subtitle">Visão resumida e visual para suporte à leitura do RH</div>
+            </div>
+        </div>
+
+        <div class="cover">
+            <div class="cover-top">
+                <div>
+                    <div class="cover-title">Leitura executiva da pesquisa</div>
+                    <div class="cover-metrics">
+                        <div class="cover-metric">
+                            <div class="cover-metric-label">Respondentes</div>
+                            <div class="cover-metric-value">{{ response_count }}</div>
+                        </div>
+                        <div class="cover-metric">
+                            <div class="cover-metric-label">Adesão</div>
+                            <div class="cover-metric-value">{{ ('%.1f%%' % adherence_percentage) if adherence_percentage is not none else '-' }}</div>
+                        </div>
+                        <div class="cover-metric">
+                            <div class="cover-metric-label">Pilares críticos</div>
+                            <div class="cover-metric-value">{{ critical_pillars }}</div>
+                        </div>
+                        <div class="cover-metric">
+                            <div class="cover-metric-label">Pilares em atenção</div>
+                            <div class="cover-metric-value">{{ attention_pillars }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="cover-panel">
+                    <div class="cover-panel-title">Resumo por status</div>
+                    <div class="cover-chart">{{ status_div | safe if status_has_data else '<div class="empty-state">Sem dados para o resumo de status.</div>' }}</div>
+                </div>
+            </div>
+            <div class="cover-panels">
+                <div class="cover-panel">
+                    <div class="cover-panel-title">Pilares (todos) por status</div>
+                    <div class="cover-chart">{{ pillar_div | safe }}</div>
+                </div>
+                <div class="cover-panel">
+                    <div class="cover-panel-title">Heatmap por segmento</div>
+                    <div class="cover-chart">{{ heatmap_div | safe if heatmap_div else '<div class="empty-state">Sem dados de segmentação para heatmap.</div>' }}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Todas as perguntas</h3>
+            <div class="question-list">
+                {{ question_cards | safe }}
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Recomendações</h3>
+            {% for rec in recommendations %}
+                <div class="recommendation-card">
+                    <div><b>{{ rec.label }}</b></div>
+                    <div>{{ rec.text }}</div>
+                    <div class="recommendation-meta">Status: {{ rec.status }} | Média: {{ rec.media }}</div>
+                </div>
+            {% endfor %}
+        </div>
+    </body>
+    </html>
+    """)
+
+    html = template.render(
+        response_count=response_count,
+        overall_average=overall_average,
+        critical_pillars=critical_pillars,
+        attention_pillars=attention_pillars,
+        healthy_pillars=healthy_pillars,
+        segment_column=segment_column,
+        selected_segment=selected_segment,
+        application_start_date=application_start_date,
+        total_collaborators=total_collaborators,
+        adherence_percentage=adherence_percentage,
+        pillar_div=pillar_div,
+        status_div=status_div,
+        status_has_data=status_has_data,
+        heatmap_div=heatmap_div,
+        question_cards=question_cards,
+        recommendations=recommendations,
+    )
+    return html
 
 
-def build_rh_report_pdf_via_playwright_bytes(html: str, *, wait_until: str = "networkidle") -> bytes:
+def build_rh_report_pdf_via_playwright_bytes(html: str, *, wait_until: str = "domcontentloaded") -> bytes:
     def _brief_error(exc: Exception, max_len: int = 260) -> str:
         text = str(exc).replace("\n", " ").strip()
         return text if len(text) <= max_len else text[: max_len - 3] + "..."
@@ -1177,9 +1441,7 @@ def build_rh_report_pdf_via_playwright_bytes(html: str, *, wait_until: str = "ne
             if browser is None:
                 candidates = ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome"]
                 for candidate in candidates:
-                    resolved = os.path.realpath(candidate)
-                    is_snap_binary = "/snap/" in resolved
-                    if which(candidate) and not is_snap_binary:
+                    if which(candidate):
                         try:
                             browser = p.chromium.launch(headless=True, executable_path=candidate)
                             launch_error = None
@@ -1192,6 +1454,7 @@ def build_rh_report_pdf_via_playwright_bytes(html: str, *, wait_until: str = "ne
 
             page = browser.new_page()
             page.set_content(html, wait_until=wait_until)
+            page.wait_for_timeout(1200)
             pdf_bytes = page.pdf(format="A4", print_background=True)
             browser.close()
             return pdf_bytes
@@ -1200,19 +1463,24 @@ def build_rh_report_pdf_via_playwright_bytes(html: str, *, wait_until: str = "ne
 
     # Attempt 2: Direct Chromium command (helps when Playwright+snap has compatibility issues)
     try:
-        chromium_cmd = which("chromium-browser") or which("chromium")
-        if chromium_cmd and "/snap/" not in os.path.realpath(chromium_cmd):
+        chromium_cmd = which("chromium-browser") or which("chromium") or which("google-chrome") or which("google-chrome-stable")
+        if chromium_cmd:
             token = uuid4().hex
             html_path = Path(f"/tmp/nr1_report_{token}.html")
             pdf_path = Path(f"/tmp/nr1_report_{token}.pdf")
+            user_data_dir = Path(f"/tmp/nr1_chrome_profile_{token}")
             try:
                 html_path.write_text(html, encoding="utf-8")
+                user_data_dir.mkdir(parents=True, exist_ok=True)
                 cmd = [
                     chromium_cmd,
                     "--headless",
                     "--disable-gpu",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--allow-file-access-from-files",
+                    "--virtual-time-budget=12000",
+                    f"--user-data-dir={user_data_dir}",
                     f"--print-to-pdf={pdf_path}",
                     f"file://{html_path}",
                 ]
@@ -1229,6 +1497,16 @@ def build_rh_report_pdf_via_playwright_bytes(html: str, *, wait_until: str = "ne
                     html_path.unlink()
                 if pdf_path.exists():
                     pdf_path.unlink()
+                if user_data_dir.exists():
+                    try:
+                        for path in sorted(user_data_dir.rglob("*"), reverse=True):
+                            if path.is_file():
+                                path.unlink(missing_ok=True)
+                            elif path.is_dir():
+                                path.rmdir()
+                        user_data_dir.rmdir()
+                    except Exception:
+                        pass
     except Exception as exc:
         errors.append(f"Chromium direto: {_brief_error(exc)}")
 
@@ -1285,6 +1563,10 @@ def html_pdf_backend_available() -> tuple[bool, str]:
     if wkhtml:
         return True, "wkhtmltopdf"
 
+    chromium_cmd = which("chromium-browser") or which("chromium") or which("google-chrome") or which("google-chrome-stable")
+    if chromium_cmd:
+        return True, f"chromium:{chromium_cmd}"
+
     try:
         import weasyprint  # noqa: F401
 
@@ -1295,10 +1577,10 @@ def html_pdf_backend_available() -> tuple[bool, str]:
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
 
-        # Playwright itself is present. Check for a non-snap browser candidate.
+        # Playwright itself is present. Check for an available browser candidate.
         for candidate in ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]:
-            if which(candidate) and "/snap/" not in os.path.realpath(candidate):
+            if which(candidate):
                 return True, f"playwright:{candidate}"
-        return False, "playwright sem navegador compatível (Chromium Snap é limitado para este fluxo)"
+        return False, "playwright instalado, mas sem navegador encontrado"
     except Exception:
         return False, "sem backend HTML->PDF disponível"
